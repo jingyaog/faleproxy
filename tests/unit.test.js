@@ -57,13 +57,13 @@ describe('Yale to Fale replacement logic', () => {
       </head>
       <body>
         <h1>Hello World</h1>
-        <p>This is a test page with no Yale references.</p>
+        <p>This is a test page with no university references.</p>
       </body>
       </html>
     `;
-    
+
     const $ = cheerio.load(htmlWithoutYale);
-    
+
     // Apply the same replacement logic
     $('body *').contents().filter(function() {
       return this.nodeType === 3;
@@ -74,34 +74,54 @@ describe('Yale to Fale replacement logic', () => {
         $(this).replaceWith(newText);
       }
     });
-    
+
     const modifiedHtml = $.html();
-    
-    // Content should remain the same
+
+    // Content should remain the same (no Yale to replace)
     expect(modifiedHtml).toContain('<title>Test Page</title>');
     expect(modifiedHtml).toContain('<h1>Hello World</h1>');
-    expect(modifiedHtml).toContain('<p>This is a test page with no Yale references.</p>');
+    expect(modifiedHtml).toContain('<p>This is a test page with no university references.</p>');
   });
 
   test('should handle case-insensitive replacements', () => {
     const mixedCaseHtml = `
       <p>YALE University, Yale College, and yale medical school are all part of the same institution.</p>
     `;
-    
+
     const $ = cheerio.load(mixedCaseHtml);
-    
+
+    // Helper function to preserve case
+    function replaceYaleWithFale(text) {
+      return text.replace(/yale/gi, (match) => {
+        // Preserve the case pattern of the original match
+        if (match === 'YALE') return 'FALE';
+        if (match === 'Yale') return 'Fale';
+        if (match === 'yale') return 'fale';
+
+        // Handle mixed case (e.g., YaLe, yAlE, etc.)
+        let result = '';
+        const target = 'fale';
+        for (let i = 0; i < match.length; i++) {
+          const char = match[i];
+          const targetChar = target[i];
+          result += char === char.toUpperCase() ? targetChar.toUpperCase() : targetChar;
+        }
+        return result;
+      });
+    }
+
     $('body *').contents().filter(function() {
       return this.nodeType === 3;
     }).each(function() {
       const text = $(this).text();
-      const newText = text.replace(/Yale/gi, 'Fale');
+      const newText = replaceYaleWithFale(text);
       if (text !== newText) {
         $(this).replaceWith(newText);
       }
     });
-    
+
     const modifiedHtml = $.html();
-    
+
     expect(modifiedHtml).toContain('FALE University, Fale College, and fale medical school');
   });
 });
