@@ -1,44 +1,28 @@
-const axios = require('axios');
+const request = require('supertest');
 const cheerio = require('cheerio');
-const { exec } = require('child_process');
-const { promisify } = require('util');
-const execAsync = promisify(exec);
 const { sampleHtmlWithYale } = require('./test-utils');
 const nock = require('nock');
 
-// Set a different port for testing to avoid conflict with the main app
-const TEST_PORT = 3099;
-let server;
+// Import the app directly (no server spawning needed)
+const app = require('../app');
 
 describe('Integration Tests', () => {
-  // Modify the app to use a test port
-  beforeAll(async () => {
+  beforeAll(() => {
     // Mock external HTTP requests
     nock.disableNetConnect();
+    // Allow localhost connections for supertest
     nock.enableNetConnect('127.0.0.1');
-    
-    // Create a temporary test app file
-    await execAsync('cp app.js app.test.js');
-    await execAsync(`sed -i '' 's/const PORT = 3001/const PORT = ${TEST_PORT}/' app.test.js`);
-    
-    // Start the test server
-    server = require('child_process').spawn('node', ['app.test.js'], {
-      detached: true,
-      stdio: 'ignore'
-    });
-    
-    // Give the server time to start
-    await new Promise(resolve => setTimeout(resolve, 2000));
-  }, 10000); // Increase timeout for server startup
+  });
 
-  afterAll(async () => {
-    // Kill the test server and clean up
-    if (server && server.pid) {
-      process.kill(-server.pid);
-    }
-    await execAsync('rm app.test.js');
+  afterAll(() => {
+    // Clean up nock
     nock.cleanAll();
     nock.enableNetConnect();
+  });
+
+  afterEach(() => {
+    // Clear any lingering nock interceptors after each test
+    nock.cleanAll();
   });
 
   test('Should replace Yale with Fale in fetched content', async () => {
@@ -46,21 +30,21 @@ describe('Integration Tests', () => {
     nock('https://example.com')
       .get('/')
       .reply(200, sampleHtmlWithYale);
-    
-    // Make a request to our proxy app
-    const response = await axios.post(`http://localhost:${TEST_PORT}/fetch`, {
-      url: 'https://example.com/'
-    });
-    
+
+    // Make a request to our proxy app using supertest
+    const response = await request(app)
+      .post('/fetch')
+      .send({ url: 'https://example.com/' });
+
     expect(response.status).toBe(200);
-    expect(response.data.success).toBe(true);
-    
+    expect(response.body.success).toBe(true);
+
     // Verify Yale has been replaced with Fale in text
-    const $ = cheerio.load(response.data.content);
+    const $ = cheerio.load(response.body.content);
     expect($('title').text()).toBe('Fale University Test Page');
     expect($('h1').text()).toBe('Welcome to Fale University');
     expect($('p').first().text()).toContain('Fale University is a private');
-    
+
     // Verify URLs remain unchanged
     const links = $('a');
     let hasYaleUrl = false;
@@ -71,31 +55,69 @@ describe('Integration Tests', () => {
       }
     });
     expect(hasYaleUrl).toBe(true);
-    
+
     // Verify link text is changed
     expect($('a').first().text()).toBe('About Fale');
-  }, 10000); // Increase timeout for this test
+  });
 
   test('Should handle invalid URLs', async () => {
-    try {
-      await axios.post(`http://localhost:${TEST_PORT}/fetch`, {
-        url: 'not-a-valid-url'
-      });
-      // Should not reach here
-      expect(true).toBe(false);
-    } catch (error) {
-      expect(error.response.status).toBe(500);
-    }
+    // Mock an external URL that returns an error
+    nock('https://invalid-url.com')
+      .get('/')
+      .replyWithError('Connection refused');
+
+    const response = await request(app)
+      .post('/fetch')
+      .send({ url: 'https://invalid-url.com/' });
+
+    expect(response.status).toBe(500);
+    expect(response.body.error).toContain('Failed to fetch content');
   });
 
   test('Should handle missing URL parameter', async () => {
-    try {
-      await axios.post(`http://localhost:${TEST_PORT}/fetch`, {});
-      // Should not reach here
-      expect(true).toBe(false);
-    } catch (error) {
-      expect(error.response.status).toBe(400);
-      expect(error.response.data.error).toBe('URL is required');
-    }
+    const response = await request(app)
+      .post('/fetch')
+      .send({});
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe('URL is required');
+  });
+
+  test('Should handle mixed case Yale variations', async () => {
+    // HTML with mixed case variations like YaLe, yAlE
+    const mixedCaseHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head><title>Test</title></head>
+      <body>
+        <p>Testing YaLe and yAlE and YAlE variations.</p>
+      </body>
+      </html>
+    `;
+
+    nock('https://mixed.com')
+      .get('/')
+      .reply(200, mixedCaseHtml);
+
+    const response = await request(app)
+      .post('/fetch')
+      .send({ url: 'https://mixed.com/' });
+
+    expect(response.status).toBe(200);
+    const $ = cheerio.load(response.body.content);
+    const text = $('p').text();
+
+    // YaLe -> FaLe, yAlE -> fAlE, YAlE -> FAlE
+    expect(text).toContain('FaLe');
+    expect(text).toContain('fAlE');
+    expect(text).toContain('FAlE');
+  });
+
+  test('Should serve the main page', async () => {
+    const response = await request(app)
+      .get('/');
+
+    expect(response.status).toBe(200);
+    expect(response.type).toMatch(/html/);
   });
 });
